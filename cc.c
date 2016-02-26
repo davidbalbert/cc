@@ -34,6 +34,7 @@ FILE *infile;
 typedef enum NodeType NodeType;
 enum NodeType
 {
+    Nprog,
     Nstmt,
     Ndecl,
     Ntype,
@@ -49,6 +50,7 @@ typedef struct Node Node;
 struct Node
 {
     NodeType type;
+    Node *next;    // for lists of nodes
     union {
         Node *n;
         Type type; // Ttype
@@ -172,7 +174,35 @@ mknode(NodeType type)
 {
     Node *n = emalloc(sizeof(Node));
     n->type = type;
+    n->next = NULL;
     return n;
+}
+
+void
+eachnode(Node *n, void (*f)(Node *))
+{
+    while (n != NULL) {
+        f(n);
+        n = n->next;
+    }
+}
+
+void
+append(Node **list, Node *n)
+{
+
+    // empty list
+    if (*list == NULL) {
+        *list = n;
+    } else {
+        Node *l = *list;
+
+        while (l->next != NULL) {
+            l = l->next;
+        }
+
+        l->next = n;
+    }
 }
 
 Node *
@@ -234,13 +264,15 @@ parse_stmt(void)
 Node *
 parse_prog(void)
 {
-    Node *n;
+    Node *prog = mknode(Nprog);
 
-    trim();
-    n = parse_stmt();
-    trim();
+    while (peek() != EOF) {
+        trim();
+        append(&prog->args[0].n, parse_stmt());
+        trim();
+    }
 
-    return n;
+    return prog;
 }
 
 Node *
@@ -282,6 +314,9 @@ printnode(Node *n)
         panic("printnode");
 
     switch (n->type) {
+        case Nprog:
+            eachnode(n->args[0].n, printnode);
+            break;
         case Nstmt:
             printnode(n->args[0].n);
             printf(";\n");
