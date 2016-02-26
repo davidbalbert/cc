@@ -12,10 +12,15 @@
  * Grammar:
  *
  * prog:
- *      stmt
+ *      stmt+
  *
  * stmt:
  *      declaration ';'
+ *      expr ';'
+ *
+ * expr:
+ *      name
+ *      num
  *
  * declaration:
  *      type name
