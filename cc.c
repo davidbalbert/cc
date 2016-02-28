@@ -6,7 +6,8 @@
 #include <unistd.h>
 #include <stdarg.h>
 
-#define BUFSIZE 1000
+#define BUFSIZE 1024
+#define nil NULL
 
 /*
  * Grammar:
@@ -36,6 +37,55 @@ char *progname;
 char *filename;
 FILE *infile;
 
+typedef enum TokenType TokenType;
+enum TokenType
+{
+    TTtype,
+    TTsym,
+    TTsemi,
+};
+
+char *
+tok2str(TokenType type)
+{
+    switch (type) {
+        case TTtype:
+            return "type";
+        case TTsym:
+            return "symbol";
+        case TTsemi:
+            return "`;'";
+        default:
+            return "(unknown token type)";
+    }
+}
+
+typedef enum Type Type;
+enum Type {
+    Tint,
+};
+
+char *
+type2str(Type type)
+{
+    switch (type) {
+        case Tint:
+            return "int";
+        default:
+            return "(unknown type)";
+    }
+}
+
+typedef struct Token Token;
+struct Token
+{
+    TokenType type;
+    union {
+        Type type;
+        char *s;
+    } val;
+};
+
 typedef enum NodeType NodeType;
 enum NodeType
 {
@@ -44,11 +94,6 @@ enum NodeType
     Ndecl,
     Ntype,
     Nsym,
-};
-
-typedef enum Type Type;
-enum Type {
-    Tint,
 };
 
 typedef struct Node Node;
@@ -83,21 +128,21 @@ emalloc(size_t size)
 {
     void *p = calloc(1, size);
 
-    if (p == NULL)
+    if (p == nil)
         panic("emalloc");
 
     return p;
 }
 
-int
-peek()
+char *
+estrdup(char *s1)
 {
-    int c = fgetc(infile);
+    char *s2 = strdup(s1);
 
-    if (c != EOF)
-        ungetc(c, infile);
+    if (s2 == nil)
+        panic("estrdup");
 
-    return c;
+    return s2;
 }
 
 int
@@ -109,40 +154,22 @@ shift()
 void
 unshift(int c)
 {
-    if (c != EOF)
-        ungetc(c, infile);
+    if (c == EOF)
+        return;
+
+    if (ungetc(c, infile) == EOF)
+        panic("ungetc('%c')", c);
 }
 
-char *
-shiftname()
+int
+peek()
 {
-    int c;
-    char *buf = emalloc(BUFSIZE);
-    int i = 0;
+    int c = fgetc(infile);
 
-    c = shift();
+    if (c != EOF)
+        unshift(c);
 
-    if (!isalpha(c) && c != '_')
-        panic("expected identifier, got `%c'", c);
-
-    buf[i++] = c;
-
-    for (;;) {
-        c = peek();
-
-        if (!isalpha(c) && !isdigit(c) && c != '_')
-            break;
-
-        if (i == BUFSIZE - 1)
-            panic("shiftname - identifier too long");
-
-        buf[i++] = c;
-        shift();
-    }
-
-    buf[i++] = '\0';
-
-    return buf;
+    return c;
 }
 
 void
@@ -163,30 +190,158 @@ trim(void)
     }
 }
 
-void
-expectc(char expected)
+Token *
+mktoken(TokenType type)
 {
-    int c = shift();
-
-    if (c == EOF)
-        panic("expected '%c', but got EOF", expected);
-
-    if (c != expected)
-        panic("expected '%c', but got '%c'", expected);
+    Token *t = emalloc(sizeof(TokenType));
+    t->type = type;
+    return t;
 }
+
+void
+freetok(Token *t)
+{
+    if (t->type == TTsym)
+        free(t->val.s);
+
+    free(t);
+}
+
+char *
+shiftwhile(char *chars)
+{
+    char *buf = emalloc(BUFSIZE);
+    int c, i = 0;
+
+    for (;;) {
+        c = shift();
+
+        if (strchr(chars, c) == nil)
+            break;
+
+        if (i == BUFSIZE - 1)
+            panic("shiftwhile - token too long");
+
+        buf[i++] = c;
+    }
+
+    unshift(c);
+    buf[i++] = '\0';
+
+    return buf;
+}
+
+Token *
+lexname()
+{
+    Token *t;
+    char *s = shiftwhile("abcdefghijklmnopqrstuvwxyz"
+                         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                         "0123456789_");
+
+    if (strcmp(s, "int") == 0) {
+        t = mktoken(TTtype);
+        t->val.type = Tint;
+    } else {
+        t = mktoken(TTsym);
+        t->val.s = s;
+    }
+
+    return t;
+}
+
+Token *
+nexttok()
+{
+    Token *t;
+    int c, c2;
+    char *s;
+
+    trim();
+
+    c = shift();
+
+    if (c == EOF) {
+        return nil;
+    } if (c == ';') {
+        t = mktoken(TTsemi);
+        return t;
+    } else if (isalpha(c)) {
+        unshift(c);
+        t = lexname();
+        return t;
+    }
+
+    c2 = peek();
+    unshift(c);
+
+    if (isdigit(c) && c2 == EOF) {
+        panic("nexttok - single digit");
+    } else if (c == '0' && isdigit(c2)) {
+        panic("octal not supported");
+    } else if (c == '0' && (c2 == 'x' || c2 == 'X')) {
+        panic("hex not supported");
+    } else if (isdigit(c)) {
+        panic("decimal not supported");
+    }
+
+    return t;
+}
+
+// token buffer of size one. allows for peeking
+Token *tokbuf = nil;
+
+Token *
+peektok()
+{
+    if (tokbuf)
+        return tokbuf;
+
+    return tokbuf = nexttok();
+}
+
+Token *
+shifttok()
+{
+    Token *t;
+
+    if (tokbuf) {
+        t = tokbuf;
+        tokbuf = nil;
+    } else {
+        t = nexttok();
+    }
+
+    return t;
+}
+
+Token *
+expect(TokenType type)
+{
+    Token *t = shifttok();
+
+    if (t == nil)
+        panic("expected %s, got EOF", tok2str(type));
+
+    if (t->type != type)
+        panic("expected %s, got %s", tok2str(type), tok2str(t->type));
+
+    return t;
+}
+
 Node *
 mknode(NodeType type)
 {
     Node *n = emalloc(sizeof(Node));
     n->type = type;
-    n->next = NULL;
+    n->next = nil;
     return n;
 }
 
 void
 eachnode(Node *n, void (*f)(Node *))
 {
-    while (n != NULL) {
+    while (n != nil) {
         f(n);
         n = n->next;
     }
@@ -197,12 +352,12 @@ append(Node **list, Node *n)
 {
 
     // empty list
-    if (*list == NULL) {
+    if (*list == nil) {
         *list = n;
     } else {
         Node *l = *list;
 
-        while (l->next != NULL) {
+        while (l->next != nil) {
             l = l->next;
         }
 
@@ -213,16 +368,13 @@ append(Node **list, Node *n)
 Node *
 parse_type()
 {
+    Token *t = expect(TTtype);
     Node *n;
-    char *s = shiftname();
 
     n = mknode(Ntype);
+    n->args[0].type = t->val.type;
 
-    if (strcmp(s, "int") == 0) {
-        n->args[0].type = Tint;
-    } else {
-        panic("unknown type `%s'", s);
-    }
+    freetok(t);
 
     return n;
 }
@@ -230,11 +382,13 @@ parse_type()
 Node *
 parse_name()
 {
+    Token *t = expect(TTsym);
     Node *n;
-    char *s = shiftname();
 
     n = mknode(Nsym);
-    n->args[0].s = s;
+    n->args[0].s = estrdup(t->val.s);
+
+    freetok(t);
 
     return n;
 }
@@ -245,7 +399,6 @@ parse_decl(void)
     Node *type, *name, *decl;
 
     type = parse_type();
-    trim();
     name = parse_name();
 
     decl = mknode(Ndecl);
@@ -260,8 +413,7 @@ parse_stmt(void)
 {
     Node *n = mknode(Nstmt);
     n->args[0].n = parse_decl();
-    trim();
-    expectc(';');
+    expect(TTsemi);
 
     return n;
 }
@@ -271,10 +423,8 @@ parse_prog(void)
 {
     Node *prog = mknode(Nprog);
 
-    while (peek() != EOF) {
-        trim();
+    while (peektok() != nil) {
         append(&prog->args[0].n, parse_stmt());
-        trim();
     }
 
     return prog;
@@ -287,7 +437,7 @@ parse()
     char buf[BUFSIZE];
     char *ret;
 
-    if ((infile = fopen(filename, "r")) == NULL) {
+    if ((infile = fopen(filename, "r")) == nil) {
         fprintf(stderr, "%s: ", progname);
         perror(filename);
         exit(1);
@@ -315,7 +465,7 @@ printtype(Type t)
 void
 printnode(Node *n)
 {
-    if (n == NULL)
+    if (n == nil)
         panic("printnode");
 
     switch (n->type) {
