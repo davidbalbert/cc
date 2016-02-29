@@ -42,6 +42,7 @@ enum TokenType
 {
     TTtype,
     TTsym,
+    TTnum,
     TTsemi,
 };
 
@@ -94,6 +95,7 @@ enum NodeType
     Ndecl,
     Ntype,
     Nsym,
+    Nnum,
 };
 
 typedef struct Node Node;
@@ -105,10 +107,11 @@ struct Node
         Node *n;
         Type type; // Ttype
         char *s;   // Nsym
+        long num;  // Nnum
     } args[3];
 };
 
-void
+__attribute__((noreturn)) void
 panic(char *fmt, ...)
 {
     va_list args;
@@ -201,6 +204,9 @@ mktoken(TokenType type)
 void
 freetok(Token *t)
 {
+    if (t == nil)
+        return;
+
     if (t->type == TTsym)
         free(t->val.s);
 
@@ -232,6 +238,15 @@ shiftwhile(char *chars)
 }
 
 Token *
+lexnum()
+{
+    Token *t = mktoken(TTnum);
+    t->val.s = shiftwhile("0123456789");
+
+    return t;
+}
+
+Token *
 lexname()
 {
     Token *t;
@@ -259,30 +274,20 @@ nexttok()
 
     trim();
 
-    c = shift();
+    c = peek();
 
-    if (c == EOF) {
+    if (c == EOF)
         return nil;
-    } if (c == ';') {
+
+    if (c == ';') {
         t = mktoken(TTsemi);
-        return t;
+        shift();
     } else if (isalpha(c)) {
-        unshift(c);
         t = lexname();
-        return t;
-    }
-
-    c2 = peek();
-    unshift(c);
-
-    if (isdigit(c) && c2 == EOF) {
-        panic("nexttok - single digit");
-    } else if (c == '0' && isdigit(c2)) {
-        panic("octal not supported");
-    } else if (c == '0' && (c2 == 'x' || c2 == 'X')) {
-        panic("hex not supported");
     } else if (isdigit(c)) {
-        panic("decimal not supported");
+        t = lexnum();
+    } else {
+        panic("unknown token starting with `%c'", c);
     }
 
     return t;
@@ -409,11 +414,43 @@ parse_decl(void)
 }
 
 Node *
+parse_num()
+{
+    Token *t = expect(TTnum);
+    Node *n = mknode(Nnum);
+    n->args[0].num = strtol(t->val.s, NULL, 0);
+
+    freetok(t);
+
+    return n;
+}
+
+Node *
+parse_expr(void)
+{
+    Token *t = peektok();
+
+    if (t->type == TTsym)
+        return parse_name();
+    else if (t->type == TTnum)
+        return parse_num();
+    else
+        panic("parse_expr");
+}
+
+Node *
 parse_stmt(void)
 {
+    Token *t = peektok();
     Node *n = mknode(Nstmt);
-    n->args[0].n = parse_decl();
-    expect(TTsemi);
+
+    if (t->type == TTtype) {
+        n->args[0].n = parse_decl();
+    } else {
+        n->args[0].n = parse_expr();
+    }
+
+    freetok(expect(TTsemi));
 
     return n;
 }
@@ -486,6 +523,9 @@ printnode(Node *n)
             break;
         case Nsym:
             printf("%s", n->args[0].s);
+            break;
+        case Nnum:
+            printf("%ld", n->args[0].num);
             break;
         default:
             panic("printnode - unknown node type %d", n->type);
